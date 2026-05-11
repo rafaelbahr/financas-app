@@ -1,4 +1,4 @@
-import NextAuth, { type NextAuthOptions } from 'next-auth'
+import { type NextAuthOptions } from 'next-auth'
 import GoogleProvider from 'next-auth/providers/google'
 
 const authorizedEmails = (process.env.AUTHORIZED_EMAILS || '').split(',').map(e => e.trim().toLowerCase())
@@ -18,7 +18,6 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (session.user) {
         session.user.email = token.email as string
-        // Determine pessoa based on email
         const email = token.email as string
         const rafaelEmail = authorizedEmails[0]
         ;(session.user as { pessoa?: string }).pessoa = email === rafaelEmail ? 'rafael' : 'renata'
@@ -35,6 +34,3 @@ export const authOptions: NextAuthOptions = {
     error: '/login',
   },
 }
-
-const handler = NextAuth(authOptions)
-export { handler as GET, handler as POST }
