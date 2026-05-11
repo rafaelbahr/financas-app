@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
   const BATCH = 25
   for (let i = 0; i < unmatched.length; i += BATCH) {
     const batch = unmatched.slice(i, i + BATCH).join('\n')
-    const results = await classifyBatch(batch, source)
+    const results = await classifyBatch([batch], source)
     aiResults.push(...results)
   }
 
