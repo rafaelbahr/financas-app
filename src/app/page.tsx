@@ -124,6 +124,8 @@ export default function Home() {
   const [importText, setImportText] = useState('')
   const [filterFrom, setFilterFrom] = useState('')
   const [filterTo, setFilterTo] = useState('')
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [pdfInfo, setPdfInfo] = useState<{ tipo: string; titular: string; periodo: string; totalTransacoes: number } | null>(null)
 
   // Income form state
   const [incomePessoa, setIncomePessoa] = useState<'rafael' | 'renata'>('rafael')
@@ -164,6 +166,34 @@ export default function Home() {
       setRulesCache({ rules: [], pixRules: [], loadedAt: new Date().toISOString() })
     } finally {
       setLoadingRules(false)
+    }
+  }, [])
+
+  const handlePdfUpload = useCallback(async (file: File) => {
+    setPdfLoading(true)
+    setPdfInfo(null)
+    setImportText('')
+    setError(null)
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve((reader.result as string).split(',')[1])
+        reader.onerror = () => reject(new Error('Erro ao ler arquivo'))
+        reader.readAsDataURL(file)
+      })
+      const res = await fetch('/api/extract-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfBase64: base64, filename: file.name }),
+      })
+      if (!res.ok) throw new Error('Erro ao processar PDF')
+      const data = await res.json()
+      setImportText(data.text)
+      setPdfInfo({ tipo: data.tipo, titular: data.titular, periodo: data.periodo, totalTransacoes: data.totalTransacoes })
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Erro ao processar PDF')
+    } finally {
+      setPdfLoading(false)
     }
   }, [])
 
@@ -326,7 +356,40 @@ export default function Home() {
                 </div>
               </div>
             )}
-            <textarea value={importText} onChange={e => setImportText(e.target.value)} placeholder="Cole aqui o texto do extrato..." className="w-full h-40 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none font-mono" />
+            {/* PDF Upload */}
+            <div
+              className="border-2 border-dashed border-zinc-700 hover:border-zinc-500 rounded-xl p-5 text-center cursor-pointer transition-all"
+              onClick={() => document.getElementById('pdf-input')?.click()}
+              onDragOver={e => e.preventDefault()}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f?.type === 'application/pdf') handlePdfUpload(f) }}
+            >
+              <input id="pdf-input" type="file" accept="application/pdf" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handlePdfUpload(f); e.target.value = '' }} />
+              {pdfLoading ? (
+                <div className="space-y-1">
+                  <div className="text-2xl animate-pulse">📄</div>
+                  <p className="text-sm text-zinc-400 animate-pulse">Extraindo transações do PDF...</p>
+                </div>
+              ) : pdfInfo ? (
+                <div className="space-y-1">
+                  <div className="text-2xl">✅</div>
+                  <p className="text-sm text-zinc-200 font-medium">{pdfInfo.titular}</p>
+                  <p className="text-xs text-zinc-500">{pdfInfo.tipo === 'cartao' ? '💳 Fatura cartão' : '🏦 Extrato conta'} · {pdfInfo.periodo} · {pdfInfo.totalTransacoes} transações</p>
+                  <p className="text-xs text-zinc-600 mt-1">Clique para trocar o arquivo</p>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <div className="text-2xl">📄</div>
+                  <p className="text-sm text-zinc-300">Clique ou arraste o PDF aqui</p>
+                  <p className="text-xs text-zinc-600">Extrato de conta ou fatura de cartão</p>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px bg-zinc-800" />
+              <span className="text-xs text-zinc-600">ou cole o texto abaixo</span>
+              <div className="flex-1 h-px bg-zinc-800" />
+            </div>
+            <textarea value={importText} onChange={e => { setImportText(e.target.value); if (pdfInfo) setPdfInfo(null) }} placeholder="Cole aqui o texto do extrato..." className="w-full h-40 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none font-mono" />
             <button onClick={handleImport} disabled={!importText.trim() || loading} className="w-full py-3 rounded-xl bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-900 font-semibold text-sm transition-all disabled:cursor-not-allowed">
               {loading ? 'Processando...' : ruleCount > 0 ? `Classificar automaticamente (${ruleCount} regras) →` : 'Classificar automaticamente →'}
             </button>
@@ -444,3 +507,4 @@ export default function Home() {
     </div>
   )
 }
+
