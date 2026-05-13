@@ -42,6 +42,25 @@ Retorne APENAS um JSON válido, sem markdown, sem texto antes ou depois:
   ]
 }`
 
+function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
+  // Remove markdown fences
+  let text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
+
+  // Extract the outermost JSON object (handles any preamble/postamble text)
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start !== -1 && end !== -1) text = text.slice(start, end + 1)
+
+  // Remove single-line comments
+  text = text.replace(/\/\/[^\n]*/g, '')
+  // Remove multi-line comments
+  text = text.replace(/\/\*[\s\S]*?\*\//g, '')
+  // Remove trailing commas before } or ]
+  text = text.replace(/,(\s*[}\]])/g, '$1')
+
+  return JSON.parse(text)
+}
+
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -78,8 +97,7 @@ export async function POST(req: NextRequest) {
     .map((b) => (b as { type: 'text'; text: string }).text)
     .join('')
 
-  const cleaned = text.replace(/```json|```/g, '').trim()
-  const result = JSON.parse(cleaned)
+  const result = parseModelJSON(text)
 
   // Formatar as transações como texto para o pipeline existente de classify
   const lines = (result.transacoes as Array<{
