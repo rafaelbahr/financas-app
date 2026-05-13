@@ -100,45 +100,75 @@ function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
   return JSON.parse(text)
 }
 
+// Allow up to 60s for large PDFs and Claude processing
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { pdfBase64, filename } = await req.json()
+  let filename = ''
+  let pdfBase64 = ''
+
+  try {
+    const body = await req.json()
+    pdfBase64 = body.pdfBase64
+    filename = body.filename || ''
+  } catch (e) {
+    console.error('[extract-pdf] Failed to parse request body:', e)
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  }
+
   if (!pdfBase64) return NextResponse.json({ error: 'pdfBase64 required' }, { status: 400 })
 
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 8000,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'document',
-            source: {
-              type: 'base64',
-              media_type: 'application/pdf',
-              data: pdfBase64,
+  console.log(`[extract-pdf] Processing file="${filename}" base64Len=${pdfBase64.length}`)
+
+  let rawModelText = ''
+  try {
+    const message = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8000,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'application/pdf',
+                data: pdfBase64,
+              },
             },
-          },
-          {
-            type: 'text',
-            text: EXTRACT_PROMPT + (filename ? `\n\nNome do arquivo: ${filename}` : ''),
-          },
-        ],
-      },
-    ],
-  })
+            {
+              type: 'text',
+              text: EXTRACT_PROMPT + (filename ? `\n\nNome do arquivo: ${filename}` : ''),
+            },
+          ],
+        },
+      ],
+    })
 
-  const text = message.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { type: 'text'; text: string }).text)
-    .join('')
+    rawModelText = message.content
+      .filter((b) => b.type === 'text')
+      .map((b) => (b as { type: 'text'; text: string }).text)
+      .join('')
 
-  const result = parseModelJSON(text)
+    console.log(`[extract-pdf] Model response length=${rawModelText.length} stopReason=${message.stop_reason}`)
+  } catch (e) {
+    console.error('[extract-pdf] Claude API error:', e)
+    return NextResponse.json({ error: 'Claude API error', detail: String(e) }, { status: 502 })
+  }
 
-  // Formatar as transações como texto para o pipeline existente de classify
+  let result: ReturnType<typeof JSON.parse>
+  try {
+    result = parseModelJSON(rawModelText)
+  } catch (e) {
+    console.error('[extract-pdf] JSON parse error:', e)
+    console.error('[extract-pdf] Raw model text (first 500):', rawModelText.slice(0, 500))
+    return NextResponse.json({ error: 'Failed to parse model response', detail: String(e) }, { status: 500 })
+  }
+
   const lines = (result.transacoes as Array<{
     data: string
     descricao: string
@@ -149,6 +179,8 @@ export async function POST(req: NextRequest) {
     const valor = t.valor < 0 ? t.valor : Math.abs(t.valor)
     return `${t.data} ${t.descricao}${cartaoInfo} ${valor}`
   })
+
+  console.log(`[extract-pdf] Done tipo=${result.tipo} banco=${result.banco} transacoes=${lines.length}`)
 
   return NextResponse.json({
     tipo: result.tipo,
