@@ -42,6 +42,45 @@ Retorne APENAS um JSON válido, sem markdown, sem texto antes ou depois:
   ]
 }`
 
+function repairJSONString(text: string): string {
+  // Fix unescaped control characters inside JSON string values by walking char-by-char
+  let result = ''
+  let inString = false
+  let escaped = false
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+
+    if (escaped) {
+      result += char
+      escaped = false
+      continue
+    }
+
+    if (char === '\\' && inString) {
+      result += char
+      escaped = true
+      continue
+    }
+
+    if (char === '"') {
+      inString = !inString
+      result += char
+      continue
+    }
+
+    if (inString) {
+      if (char === '\n') { result += '\\n'; continue }
+      if (char === '\r') { result += '\\r'; continue }
+      if (char === '\t') { result += '\\t'; continue }
+    }
+
+    result += char
+  }
+
+  return result
+}
+
 function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
   // Remove markdown fences
   let text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
@@ -51,12 +90,12 @@ function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
   const end = text.lastIndexOf('}')
   if (start !== -1 && end !== -1) text = text.slice(start, end + 1)
 
-  // Remove single-line comments
-  text = text.replace(/\/\/[^\n]*/g, '')
-  // Remove multi-line comments
-  text = text.replace(/\/\*[\s\S]*?\*\//g, '')
+  // Remove single-line and multi-line comments (outside strings)
+  text = text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
   // Remove trailing commas before } or ]
   text = text.replace(/,(\s*[}\]])/g, '$1')
+  // Fix unescaped control chars inside string values
+  text = repairJSONString(text)
 
   return JSON.parse(text)
 }
