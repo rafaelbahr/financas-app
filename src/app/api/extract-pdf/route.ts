@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   if (!pdfBase64) return NextResponse.json({ error: 'pdfBase64 required' }, { status: 400 })
 
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 8000,
     messages: [
       {
