@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
 
         const claudeStream = client.messages.stream({
           model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
+          max_tokens: 6000,
           messages: [
             {
               role: 'user',
@@ -178,17 +178,30 @@ export async function POST(req: NextRequest) {
         const truncated = stopReason === 'max_tokens'
         console.log(`[extract-pdf] Stream complete length=${rawText.length} stop_reason=${stopReason}`)
         if (truncated) console.warn('[extract-pdf] Response truncated at max_tokens — attempting JSON repair')
+        console.log('[extract-pdf] rawText preview (first 500):', rawText.slice(0, 500))
+        console.log('[extract-pdf] rawText tail (last 300):', rawText.slice(-300))
 
         send({ type: 'progress', message: 'Processando resultado...' })
 
-        const result = parseModelJSON(rawText)
+        let result: ReturnType<typeof JSON.parse>
+        try {
+          result = parseModelJSON(rawText)
+        } catch (parseErr) {
+          const msg = `Falha ao parsear JSON: ${String(parseErr)} | tail: ${rawText.slice(-200)}`
+          console.error('[extract-pdf] JSON parse error:', msg)
+          send({ type: 'error', message: msg })
+          return
+        }
 
         // Validate shape before using
         if (!result || !Array.isArray(result.transacoes)) {
-          throw new Error('Resposta inválida: campo transacoes ausente ou não é um array')
+          const msg = `Resposta inválida: campo transacoes ausente ou não é um array | keys: ${Object.keys(result || {}).join(',')}`
+          send({ type: 'error', message: msg })
+          return
         }
         if (result.transacoes.length === 0) {
-          throw new Error('Nenhuma transação encontrada no PDF')
+          send({ type: 'error', message: 'Nenhuma transação encontrada no PDF' })
+          return
         }
 
         const lines = (result.transacoes as Array<{
