@@ -5,14 +5,10 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const EXTRACT_PROMPT = `Extraia TODAS as transações do extrato bancário brasileiro.
-
-Ignore: saldo do dia, rendimentos automáticos (APLIC AUT/APR/MAIS), textos informativos, totais.
-Conta corrente: preserve o sinal do valor (negativo=débito, positivo=crédito).
-Fatura cartão: valores positivos; inclua todos os cartões e todas as parcelas.
+const EXTRACT_PROMPT = `Extraia todas as transações do extrato bancário. Ignore saldos, rendimentos automáticos e totais. Conta corrente: valor negativo=débito, positivo=crédito. Fatura cartão: valores positivos.
 
 Retorne APENAS JSON válido sem markdown:
-{"tipo":"conta|cartao","banco":"Itaú|XP|Rico|outro","titular":"nome","periodo":"MM/AAAA","transacoes":[{"data":"DD/MM/AAAA","descricao":"texto","valor":0.00,"cartao_final":"4 dígitos ou null"}]}`
+{"tipo":"conta|cartao","banco":"nome","titular":"nome","periodo":"MM/AAAA","transacoes":[{"data":"DD/MM/AAAA","descricao":"texto","valor":0.00}]}`
 
 function repairJSONString(text: string): string {
   // Fix unescaped control characters inside JSON string values by walking char-by-char
@@ -141,7 +137,7 @@ export async function POST(req: NextRequest) {
 
         const claudeStream = client.messages.stream({
           model: 'claude-sonnet-4-6',
-          max_tokens: 8000,
+          max_tokens: 4000,
           messages: [
             {
               role: 'user',
@@ -196,11 +192,10 @@ export async function POST(req: NextRequest) {
         }
 
         const lines = (result.transacoes as Array<{
-          data: string; descricao: string; valor: number; cartao_final: string | null
+          data: string; descricao: string; valor: number
         }>).map((t) => {
-          const cartaoInfo = t.cartao_final ? ` [cartao:${t.cartao_final}]` : ''
           const valor = t.valor < 0 ? t.valor : Math.abs(t.valor)
-          return `${t.data} ${t.descricao}${cartaoInfo} ${valor}`
+          return `${t.data} ${t.descricao} ${valor}`
         })
 
         console.log(`[extract-pdf] Done tipo=${result.tipo} transacoes=${lines.length}${truncated ? ' (repaired from truncation)' : ''}`)
