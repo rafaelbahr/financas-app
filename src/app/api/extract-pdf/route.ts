@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
@@ -72,94 +72,123 @@ function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
   return JSON.parse(text)
 }
 
-// Allow up to 60s for large PDFs and Claude processing
 export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!session) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
 
   let filename = ''
   let pdfBase64 = ''
-
   try {
     const body = await req.json()
     pdfBase64 = body.pdfBase64
     filename = body.filename || ''
-  } catch (e) {
-    console.error('[extract-pdf] Failed to parse request body:', e)
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid request body' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 
-  if (!pdfBase64) return NextResponse.json({ error: 'pdfBase64 required' }, { status: 400 })
+  if (!pdfBase64) {
+    return new Response(JSON.stringify({ error: 'pdfBase64 required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
 
   console.log(`[extract-pdf] Processing file="${filename}" base64Len=${pdfBase64.length}`)
 
-  let rawModelText = ''
-  try {
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
-      messages: [
-        {
-          role: 'user',
-          content: [
+  const encoder = new TextEncoder()
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: Record<string, unknown>) =>
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+
+      try {
+        send({ type: 'progress', message: 'Analisando PDF com IA...' })
+
+        const claudeStream = client.messages.stream({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          messages: [
             {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfBase64,
-              },
-            },
-            {
-              type: 'text',
-              text: EXTRACT_PROMPT + (filename ? `\n\nNome do arquivo: ${filename}` : ''),
+              role: 'user',
+              content: [
+                {
+                  type: 'document',
+                  source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 },
+                },
+                {
+                  type: 'text',
+                  text: EXTRACT_PROMPT + (filename ? `\n\nArquivo: ${filename}` : ''),
+                },
+              ],
             },
           ],
-        },
-      ],
-    })
+        })
 
-    rawModelText = message.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('')
+        let rawText = ''
+        let lastProgressLen = 0
 
-    console.log(`[extract-pdf] Model response length=${rawModelText.length} stopReason=${message.stop_reason}`)
-  } catch (e) {
-    console.error('[extract-pdf] Claude API error:', e)
-    return NextResponse.json({ error: 'Claude API error', detail: String(e) }, { status: 502 })
-  }
+        for await (const event of claudeStream) {
+          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            rawText += event.delta.text
+            if (rawText.length - lastProgressLen > 400) {
+              const count = (rawText.match(/"data":/g) || []).length
+              send({
+                type: 'progress',
+                message: count > 0 ? `Extraindo transações... ${count} encontradas` : 'Extraindo transações...',
+              })
+              lastProgressLen = rawText.length
+            }
+          }
+        }
 
-  let result: ReturnType<typeof JSON.parse>
-  try {
-    result = parseModelJSON(rawModelText)
-  } catch (e) {
-    console.error('[extract-pdf] JSON parse error:', e)
-    console.error('[extract-pdf] Raw model text (first 500):', rawModelText.slice(0, 500))
-    return NextResponse.json({ error: 'Failed to parse model response', detail: String(e) }, { status: 500 })
-  }
+        console.log(`[extract-pdf] Stream complete length=${rawText.length}`)
+        send({ type: 'progress', message: 'Processando resultado...' })
 
-  const lines = (result.transacoes as Array<{
-    data: string
-    descricao: string
-    valor: number
-    cartao_final: string | null
-  }>).map((t) => {
-    const cartaoInfo = t.cartao_final ? ` [cartao:${t.cartao_final}]` : ''
-    const valor = t.valor < 0 ? t.valor : Math.abs(t.valor)
-    return `${t.data} ${t.descricao}${cartaoInfo} ${valor}`
+        const result = parseModelJSON(rawText)
+        const lines = (result.transacoes as Array<{
+          data: string; descricao: string; valor: number; cartao_final: string | null
+        }>).map((t) => {
+          const cartaoInfo = t.cartao_final ? ` [cartao:${t.cartao_final}]` : ''
+          const valor = t.valor < 0 ? t.valor : Math.abs(t.valor)
+          return `${t.data} ${t.descricao}${cartaoInfo} ${valor}`
+        })
+
+        console.log(`[extract-pdf] Done tipo=${result.tipo} transacoes=${lines.length}`)
+
+        send({
+          type: 'result',
+          tipo: result.tipo,
+          banco: result.banco,
+          titular: result.titular,
+          periodo: result.periodo,
+          text: lines.join('\n'),
+          totalTransacoes: lines.length,
+        })
+      } catch (e) {
+        console.error('[extract-pdf] Error:', e)
+        send({ type: 'error', message: String(e) })
+      } finally {
+        controller.close()
+      }
+    },
   })
 
-  console.log(`[extract-pdf] Done tipo=${result.tipo} banco=${result.banco} transacoes=${lines.length}`)
-
-  return NextResponse.json({
-    tipo: result.tipo,
-    banco: result.banco,
-    titular: result.titular,
-    periodo: result.periodo,
-    text: lines.join('\n'),
-    totalTransacoes: lines.length,
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
   })
 }

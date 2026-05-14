@@ -125,6 +125,7 @@ export default function Home() {
   const [filterFrom, setFilterFrom] = useState('')
   const [filterTo, setFilterTo] = useState('')
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [pdfProgress, setPdfProgress] = useState('')
   const [pdfInfo, setPdfInfo] = useState<{ tipo: string; titular: string; periodo: string; totalTransacoes: number } | null>(null)
 
   // Income form state
@@ -172,6 +173,7 @@ export default function Home() {
   const handlePdfUpload = useCallback(async (file: File) => {
     setPdfLoading(true)
     setPdfInfo(null)
+    setPdfProgress('Preparando PDF...')
     setImportText('')
     setError(null)
     try {
@@ -181,19 +183,53 @@ export default function Home() {
         reader.onerror = () => reject(new Error('Erro ao ler arquivo'))
         reader.readAsDataURL(file)
       })
+
       const res = await fetch('/api/extract-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pdfBase64: base64, filename: file.name }),
       })
-      if (!res.ok) throw new Error('Erro ao processar PDF')
-      const data = await res.json()
-      setImportText(data.text)
-      setPdfInfo({ tipo: data.tipo, titular: data.titular, periodo: data.periodo, totalTransacoes: data.totalTransacoes })
+
+      if (!res.ok) throw new Error(`Erro ao processar PDF (${res.status})`)
+      if (!res.body) throw new Error('Sem resposta do servidor')
+
+      const sseReader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await sseReader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          let event: Record<string, unknown>
+          try { event = JSON.parse(line.slice(6)) } catch { continue }
+
+          if (event.type === 'progress') {
+            setPdfProgress(event.message as string)
+          } else if (event.type === 'result') {
+            setImportText(event.text as string)
+            setPdfInfo({
+              tipo: event.tipo as string,
+              titular: event.titular as string,
+              periodo: event.periodo as string,
+              totalTransacoes: event.totalTransacoes as number,
+            })
+          } else if (event.type === 'error') {
+            throw new Error(event.message as string)
+          }
+        }
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Erro ao processar PDF')
     } finally {
       setPdfLoading(false)
+      setPdfProgress('')
     }
   }, [])
 
@@ -365,9 +401,12 @@ export default function Home() {
             >
               <input id="pdf-input" type="file" accept="application/pdf" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handlePdfUpload(f); e.target.value = '' }} />
               {pdfLoading ? (
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <div className="text-2xl animate-pulse">📄</div>
-                  <p className="text-sm text-zinc-400 animate-pulse">Extraindo transações do PDF...</p>
+                  <p className="text-sm text-zinc-400">{pdfProgress || 'Preparando PDF...'}</p>
+                  <div className="h-1 bg-zinc-800 rounded-full overflow-hidden mx-auto w-32">
+                    <div className="h-1 bg-zinc-500 rounded-full animate-pulse w-full" />
+                  </div>
                 </div>
               ) : pdfInfo ? (
                 <div className="space-y-1">
