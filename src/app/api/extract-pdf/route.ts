@@ -5,91 +5,50 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const EXTRACT_PROMPT = `Extraia todas as transações do extrato bancário. Ignore saldos, rendimentos automáticos e totais. Conta corrente: valor negativo=débito, positivo=crédito. Fatura cartão: valores positivos.
+const EXTRACT_PROMPT = `Extraia todas as transações do extrato bancário brasileiro.
 
-Retorne APENAS JSON válido sem markdown:
-{"tipo":"conta|cartao","banco":"nome","titular":"nome","periodo":"MM/AAAA","transacoes":[{"data":"DD/MM/AAAA","descricao":"texto","valor":0.00}]}`
+Retorne APENAS texto simples neste formato exato (sem markdown, sem explicações):
+TIPO:conta
+BANCO:nome do banco
+TITULAR:nome completo
+PERIODO:MM/AAAA
+DD/MM/AAAA|DESCRIÇÃO DA TRANSAÇÃO|VALOR
 
-function repairJSONString(text: string): string {
-  // Fix unescaped control characters inside JSON string values by walking char-by-char
-  let result = ''
-  let inString = false
-  let escaped = false
+Regras:
+- Ignore saldos, rendimentos automáticos (APLIC AUT/APR/MAIS) e totais
+- Conta corrente: valor negativo para débito, positivo para crédito
+- Fatura cartão: valores sempre positivos
+- Uma transação por linha, sem linhas em branco entre elas
+- VALOR deve ser número decimal com ponto (ex: -150.00 ou 200.50)`
 
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i]
+function parsePlainText(raw: string): {
+  tipo: string; banco: string; titular: string; periodo: string; lines: string[]
+} {
+  const tipo_match = raw.match(/^TIPO:(.+)$/m)
+  const banco_match = raw.match(/^BANCO:(.+)$/m)
+  const titular_match = raw.match(/^TITULAR:(.+)$/m)
+  const periodo_match = raw.match(/^PERIODO:(.+)$/m)
 
-    if (escaped) {
-      result += char
-      escaped = false
-      continue
-    }
+  const tipo = tipo_match?.[1]?.trim() ?? ''
+  const banco = banco_match?.[1]?.trim() ?? ''
+  const titular = titular_match?.[1]?.trim() ?? ''
+  const periodo = periodo_match?.[1]?.trim() ?? ''
 
-    if (char === '\\' && inString) {
-      result += char
-      escaped = true
-      continue
-    }
-
-    if (char === '"') {
-      inString = !inString
-      result += char
-      continue
-    }
-
-    if (inString) {
-      if (char === '\n') { result += '\\n'; continue }
-      if (char === '\r') { result += '\\r'; continue }
-      if (char === '\t') { result += '\\t'; continue }
-    }
-
-    result += char
+  const lines: string[] = []
+  for (const raw_line of raw.split('\n')) {
+    const line = raw_line.trim()
+    if (!line.includes('|')) continue
+    const parts = line.split('|')
+    if (parts.length < 3) continue
+    const data = parts[0].trim()
+    const descricao = parts[1].trim()
+    const valorStr = parts[2].trim().replace(',', '.')
+    const valor = parseFloat(valorStr)
+    if (isNaN(valor) || !/^\d{2}\/\d{2}\/\d{4}$/.test(data)) continue
+    lines.push(`${data} ${descricao} ${valor}`)
   }
 
-  return result
-}
-
-// Closes any unclosed brackets left by a truncated model response
-function closeTruncatedJSON(text: string): string {
-  const stack: string[] = []
-  let inString = false
-  let escaped = false
-
-  for (const char of text) {
-    if (escaped) { escaped = false; continue }
-    if (char === '\\' && inString) { escaped = true; continue }
-    if (char === '"') { inString = !inString; continue }
-    if (inString) continue
-    if (char === '[' || char === '{') stack.push(char === '[' ? ']' : '}')
-    else if ((char === ']' || char === '}') && stack.length > 0) stack.pop()
-  }
-
-  if (inString) text += '"' // close dangling string
-  return text + stack.reverse().join('')
-}
-
-function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
-  // Remove markdown fences
-  let text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
-
-  // Extract the outermost JSON object (handles any preamble/postamble text)
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start !== -1 && end !== -1) text = text.slice(start, end + 1)
-
-  // Remove trailing commas before } or ] (safe: doesn't touch string contents)
-  text = text.replace(/,(\s*[}\]])/g, '$1')
-  // Fix unescaped control chars inside string values
-  text = repairJSONString(text)
-
-  // First attempt: parse as-is
-  try {
-    return JSON.parse(text)
-  } catch {
-    // Second attempt: close any unclosed brackets (handles truncated responses)
-    const repaired = closeTruncatedJSON(text)
-    return JSON.parse(repaired)
-  }
+  return { tipo, banco, titular, periodo, lines }
 }
 
 export const maxDuration = 60
@@ -163,7 +122,7 @@ export async function POST(req: NextRequest) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             rawText += event.delta.text
             if (rawText.length - lastProgressLen > 400) {
-              const count = (rawText.match(/"data":/g) || []).length
+              const count = (rawText.match(/^\d{2}\/\d{2}\/\d{4}\|/gm) || []).length
               send({
                 type: 'progress',
                 message: count > 0 ? `Extraindo transações... ${count} encontradas` : 'Extraindo transações...',
@@ -175,50 +134,30 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        const truncated = stopReason === 'max_tokens'
         console.log(`[extract-pdf] Stream complete length=${rawText.length} stop_reason=${stopReason}`)
-        if (truncated) console.warn('[extract-pdf] Response truncated at max_tokens — attempting JSON repair')
-        console.log('[extract-pdf] rawText preview (first 500):', rawText.slice(0, 500))
-        console.log('[extract-pdf] rawText tail (last 300):', rawText.slice(-300))
+        console.log('[extract-pdf] rawText preview (first 400):', rawText.slice(0, 400))
+        console.log('[extract-pdf] rawText tail (last 200):', rawText.slice(-200))
 
         send({ type: 'progress', message: 'Processando resultado...' })
 
-        let result: ReturnType<typeof JSON.parse>
-        try {
-          result = parseModelJSON(rawText)
-        } catch (parseErr) {
-          const msg = `Falha ao parsear JSON: ${String(parseErr)} | tail: ${rawText.slice(-200)}`
-          console.error('[extract-pdf] JSON parse error:', msg)
-          send({ type: 'error', message: msg })
+        const { tipo, banco, titular, periodo, lines } = parsePlainText(rawText)
+
+        console.log(`[extract-pdf] Parsed: tipo=${tipo} banco=${banco} transacoes=${lines.length}`)
+
+        if (lines.length === 0) {
+          send({
+            type: 'error',
+            message: `Nenhuma transação encontrada. Resposta do modelo: ${rawText.slice(0, 300)}`,
+          })
           return
         }
-
-        // Validate shape before using
-        if (!result || !Array.isArray(result.transacoes)) {
-          const msg = `Resposta inválida: campo transacoes ausente ou não é um array | keys: ${Object.keys(result || {}).join(',')}`
-          send({ type: 'error', message: msg })
-          return
-        }
-        if (result.transacoes.length === 0) {
-          send({ type: 'error', message: 'Nenhuma transação encontrada no PDF' })
-          return
-        }
-
-        const lines = (result.transacoes as Array<{
-          data: string; descricao: string; valor: number
-        }>).map((t) => {
-          const valor = t.valor < 0 ? t.valor : Math.abs(t.valor)
-          return `${t.data} ${t.descricao} ${valor}`
-        })
-
-        console.log(`[extract-pdf] Done tipo=${result.tipo} transacoes=${lines.length}${truncated ? ' (repaired from truncation)' : ''}`)
 
         send({
           type: 'result',
-          tipo: result.tipo,
-          banco: result.banco,
-          titular: result.titular,
-          periodo: result.periodo,
+          tipo,
+          banco,
+          titular,
+          periodo,
           text: lines.join('\n'),
           totalTransacoes: lines.length,
         })
