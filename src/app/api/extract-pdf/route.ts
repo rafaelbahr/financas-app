@@ -161,6 +161,7 @@ export async function POST(req: NextRequest) {
 
         let rawText = ''
         let lastProgressLen = 0
+        let stopReason: string | null = null
 
         for await (const event of claudeStream) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
@@ -173,13 +174,13 @@ export async function POST(req: NextRequest) {
               })
               lastProgressLen = rawText.length
             }
+          } else if (event.type === 'message_delta') {
+            stopReason = event.delta.stop_reason ?? null
           }
         }
 
-        // Fetch stop_reason to detect truncation before parsing
-        const finalMsg = await claudeStream.finalMessage()
-        const truncated = finalMsg.stop_reason === 'max_tokens'
-        console.log(`[extract-pdf] Stream complete length=${rawText.length} stop_reason=${finalMsg.stop_reason}`)
+        const truncated = stopReason === 'max_tokens'
+        console.log(`[extract-pdf] Stream complete length=${rawText.length} stop_reason=${stopReason}`)
         if (truncated) console.warn('[extract-pdf] Response truncated at max_tokens — attempting JSON repair')
 
         send({ type: 'progress', message: 'Processando resultado...' })
