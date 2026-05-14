@@ -176,6 +176,33 @@ export default function Home() {
     setPdfProgress('Preparando PDF...')
     setImportText('')
     setError(null)
+
+    const handleSseLine = (line: string) => {
+      if (!line.startsWith('data: ')) return
+      let event: Record<string, unknown>
+      try { event = JSON.parse(line.slice(6)) } catch (err) {
+        console.warn('[handlePdfUpload] Failed to parse SSE line:', line.slice(0, 100), err)
+        return
+      }
+      console.log('[handlePdfUpload] SSE event:', event.type, event.type === 'progress' ? event.message : '')
+      if (event.type === 'progress') {
+        setPdfProgress(event.message as string)
+      } else if (event.type === 'result') {
+        const text = event.text as string
+        console.log('[handlePdfUpload] Result received — textLength:', text?.length, 'totalTransacoes:', event.totalTransacoes)
+        console.log('[handlePdfUpload] Text preview:', text?.slice(0, 150))
+        setImportText(text)
+        setPdfInfo({
+          tipo: event.tipo as string,
+          titular: event.titular as string,
+          periodo: event.periodo as string,
+          totalTransacoes: event.totalTransacoes as number,
+        })
+      } else if (event.type === 'error') {
+        throw new Error(event.message as string)
+      }
+    }
+
     try {
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
@@ -184,11 +211,15 @@ export default function Home() {
         reader.readAsDataURL(file)
       })
 
+      console.log('[handlePdfUpload] Uploading PDF, base64 length:', base64.length)
+
       const res = await fetch('/api/extract-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pdfBase64: base64, filename: file.name }),
       })
+
+      console.log('[handlePdfUpload] Response status:', res.status, 'content-type:', res.headers.get('content-type'))
 
       if (!res.ok) throw new Error(`Erro ao processar PDF (${res.status})`)
       if (!res.body) throw new Error('Sem resposta do servidor')
@@ -202,30 +233,21 @@ export default function Home() {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
+        const sseLines = buffer.split('\n')
+        buffer = sseLines.pop() ?? ''
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          let event: Record<string, unknown>
-          try { event = JSON.parse(line.slice(6)) } catch { continue }
-
-          if (event.type === 'progress') {
-            setPdfProgress(event.message as string)
-          } else if (event.type === 'result') {
-            setImportText(event.text as string)
-            setPdfInfo({
-              tipo: event.tipo as string,
-              titular: event.titular as string,
-              periodo: event.periodo as string,
-              totalTransacoes: event.totalTransacoes as number,
-            })
-          } else if (event.type === 'error') {
-            throw new Error(event.message as string)
-          }
-        }
+        for (const line of sseLines) handleSseLine(line)
       }
+
+      // Flush decoder and process any data remaining in buffer after stream closes
+      buffer += decoder.decode()
+      if (buffer.trim()) {
+        console.log('[handlePdfUpload] Processing remaining buffer after stream close:', buffer.trim().slice(0, 100))
+        handleSseLine(buffer.trim())
+      }
+
     } catch (e: unknown) {
+      console.error('[handlePdfUpload] Error:', e)
       setError(e instanceof Error ? e.message : 'Erro ao processar PDF')
     } finally {
       setPdfLoading(false)
