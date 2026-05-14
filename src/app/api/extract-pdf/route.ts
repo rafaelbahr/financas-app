@@ -5,42 +5,14 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const EXTRACT_PROMPT = `Você é um extrator de transações financeiras de extratos bancários brasileiros.
+const EXTRACT_PROMPT = `Extraia TODAS as transações do extrato bancário brasileiro.
 
-Analise o PDF e extraia TODAS as transações financeiras. Ignore:
-- Linhas de "SALDO DO DIA"
-- Rendimentos de aplicação automática (REND PAGO APLIC AUT, APR, MAIS)
-- Textos informativos, avisos, rodapés
-- Linhas de total/subtotal/resumo
+Ignore: saldo do dia, rendimentos automáticos (APLIC AUT/APR/MAIS), textos informativos, totais.
+Conta corrente: preserve o sinal do valor (negativo=débito, positivo=crédito).
+Fatura cartão: valores positivos; inclua todos os cartões e todas as parcelas.
 
-Para EXTRATO DE CONTA CORRENTE (Itaú):
-- Formato: "DD/MM/AAAA DESCRIÇÃO VALOR"
-- Valor negativo = débito (saída), positivo = crédito (entrada)
-- Preservar o sinal original do valor
-
-Para FATURA DE CARTÃO DE CRÉDITO (Itaú):
-- Pode ter múltiplos cartões na mesma fatura (ex: "final 4050", "final 0981")
-- Inclua TODAS as transações de TODOS os cartões listados na fatura
-- Inclua compras parceladas de meses anteriores que aparecem nesta fatura
-- Formato: "DD/MM ESTABELECIMENTO VALOR"
-- Todos os valores são positivos (débito)
-- Para compras parceladas, inclua a parcela que aparece (ex: "01/03" = parcela 1 de 3)
-
-Retorne APENAS um JSON válido, sem markdown, sem texto antes ou depois:
-{
-  "tipo": "conta" | "cartao",
-  "banco": "Itaú" | "XP" | "Rico" | "outro",
-  "titular": "nome do titular",
-  "periodo": "MM/AAAA ou período identificado",
-  "transacoes": [
-    {
-      "data": "DD/MM/AAAA ou DD/MM",
-      "descricao": "descrição original completa",
-      "valor": 0.00,
-      "cartao_final": "4 dígitos finais do cartão (apenas para fatura cartão com múltiplos cartões, senão null)"
-    }
-  ]
-}`
+Retorne APENAS JSON válido sem markdown:
+{"tipo":"conta|cartao","banco":"Itaú|XP|Rico|outro","titular":"nome","periodo":"MM/AAAA","transacoes":[{"data":"DD/MM/AAAA","descricao":"texto","valor":0.00,"cartao_final":"4 dígitos ou null"}]}`
 
 function repairJSONString(text: string): string {
   // Fix unescaped control characters inside JSON string values by walking char-by-char
@@ -127,7 +99,7 @@ export async function POST(req: NextRequest) {
   try {
     const message = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 8000,
+      max_tokens: 4000,
       messages: [
         {
           role: 'user',
