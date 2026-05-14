@@ -53,6 +53,25 @@ function repairJSONString(text: string): string {
   return result
 }
 
+// Closes any unclosed brackets left by a truncated model response
+function closeTruncatedJSON(text: string): string {
+  const stack: string[] = []
+  let inString = false
+  let escaped = false
+
+  for (const char of text) {
+    if (escaped) { escaped = false; continue }
+    if (char === '\\' && inString) { escaped = true; continue }
+    if (char === '"') { inString = !inString; continue }
+    if (inString) continue
+    if (char === '[' || char === '{') stack.push(char === '[' ? ']' : '}')
+    else if ((char === ']' || char === '}') && stack.length > 0) stack.pop()
+  }
+
+  if (inString) text += '"' // close dangling string
+  return text + stack.reverse().join('')
+}
+
 function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
   // Remove markdown fences
   let text = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
@@ -62,14 +81,19 @@ function parseModelJSON(raw: string): ReturnType<typeof JSON.parse> {
   const end = text.lastIndexOf('}')
   if (start !== -1 && end !== -1) text = text.slice(start, end + 1)
 
-  // Remove single-line and multi-line comments (outside strings)
-  text = text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
-  // Remove trailing commas before } or ]
+  // Remove trailing commas before } or ] (safe: doesn't touch string contents)
   text = text.replace(/,(\s*[}\]])/g, '$1')
   // Fix unescaped control chars inside string values
   text = repairJSONString(text)
 
-  return JSON.parse(text)
+  // First attempt: parse as-is
+  try {
+    return JSON.parse(text)
+  } catch {
+    // Second attempt: close any unclosed brackets (handles truncated responses)
+    const repaired = closeTruncatedJSON(text)
+    return JSON.parse(repaired)
+  }
 }
 
 export const maxDuration = 60
@@ -117,7 +141,7 @@ export async function POST(req: NextRequest) {
 
         const claudeStream = client.messages.stream({
           model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
+          max_tokens: 8000,
           messages: [
             {
               role: 'user',
@@ -152,10 +176,24 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        console.log(`[extract-pdf] Stream complete length=${rawText.length}`)
+        // Fetch stop_reason to detect truncation before parsing
+        const finalMsg = await claudeStream.finalMessage()
+        const truncated = finalMsg.stop_reason === 'max_tokens'
+        console.log(`[extract-pdf] Stream complete length=${rawText.length} stop_reason=${finalMsg.stop_reason}`)
+        if (truncated) console.warn('[extract-pdf] Response truncated at max_tokens — attempting JSON repair')
+
         send({ type: 'progress', message: 'Processando resultado...' })
 
         const result = parseModelJSON(rawText)
+
+        // Validate shape before using
+        if (!result || !Array.isArray(result.transacoes)) {
+          throw new Error('Resposta inválida: campo transacoes ausente ou não é um array')
+        }
+        if (result.transacoes.length === 0) {
+          throw new Error('Nenhuma transação encontrada no PDF')
+        }
+
         const lines = (result.transacoes as Array<{
           data: string; descricao: string; valor: number; cartao_final: string | null
         }>).map((t) => {
@@ -164,7 +202,7 @@ export async function POST(req: NextRequest) {
           return `${t.data} ${t.descricao}${cartaoInfo} ${valor}`
         })
 
-        console.log(`[extract-pdf] Done tipo=${result.tipo} transacoes=${lines.length}`)
+        console.log(`[extract-pdf] Done tipo=${result.tipo} transacoes=${lines.length}${truncated ? ' (repaired from truncation)' : ''}`)
 
         send({
           type: 'result',
