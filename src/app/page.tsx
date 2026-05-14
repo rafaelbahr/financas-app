@@ -230,20 +230,28 @@ export default function Home() {
 
       while (true) {
         const { done, value } = await sseReader.read()
+
+        // Process data BEFORE checking done — some runtimes deliver the last
+        // chunk with done=true simultaneously, and breaking first would drop it.
+        if (value?.length) {
+          buffer += decoder.decode(value, { stream: !done })
+
+          // Use \n\n (the real SSE event delimiter) instead of splitting on \n
+          let boundary
+          while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+            const eventBlock = buffer.slice(0, boundary)
+            buffer = buffer.slice(boundary + 2)
+            for (const line of eventBlock.split('\n')) handleSseLine(line)
+          }
+        }
+
         if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const sseLines = buffer.split('\n')
-        buffer = sseLines.pop() ?? ''
-
-        for (const line of sseLines) handleSseLine(line)
       }
 
-      // Flush decoder and process any data remaining in buffer after stream closes
-      buffer += decoder.decode()
+      // Handle any data left in buffer (stream that didn't end with \n\n)
       if (buffer.trim()) {
-        console.log('[handlePdfUpload] Processing remaining buffer after stream close:', buffer.trim().slice(0, 100))
-        handleSseLine(buffer.trim())
+        console.log('[handlePdfUpload] Remaining buffer after stream close:', buffer.trim().slice(0, 100))
+        for (const line of buffer.trim().split('\n')) handleSseLine(line)
       }
 
     } catch (e: unknown) {
