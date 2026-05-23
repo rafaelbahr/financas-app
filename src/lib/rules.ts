@@ -60,6 +60,13 @@ export interface PreClassifiedTx {
   isReembolso?: boolean
 }
 
+const PAYMENT_KEYWORDS = [
+  'pagamento efetuado',
+  'pagto fatura',
+  'pagamento fatura',
+  'debito automatico fatura',
+]
+
 export function preClassifyLines(
   lines: string[],
   pixRules: PixRule[],
@@ -70,6 +77,7 @@ export function preClassifyLines(
   const unmatched: string[] = []
 
   for (const line of lines) {
+    if (PAYMENT_KEYWORDS.some(k => line.toLowerCase().includes(k))) continue
     const vm = line.match(/(-?[\d]+[.,][\d]{2})$/)
     const valor = vm ? parseFloat(vm[0].replace(',', '.')) : 0
     if (valor === 0) continue

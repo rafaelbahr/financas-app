@@ -52,6 +52,7 @@ Regras:
 
 Natureza: "casa"=compartilhado, "pessoal"=individual.
 Valor negativo no texto: preservar sinal, isReembolso:true.
+Em fatura de cartão: valor negativo = estorno/cancelamento (isReembolso:true, preservar valor negativo), não é gasto normal.
 
 Lançamentos:
 ${lines}

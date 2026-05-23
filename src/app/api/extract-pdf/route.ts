@@ -24,7 +24,8 @@ Regras de VALOR:
 Outras regras:
 - Uma transação por linha após os campos TIPO/TITULAR/PERIODO
 - VALOR deve ser número decimal com ponto (ex: 150.00 ou -200.50)
-- Ignore saldos, rendimentos automáticos (APLIC AUT/APR/MAIS) e totais`
+- Ignore saldos, rendimentos automáticos (APLIC AUT/APR/MAIS) e totais
+- IGNORE completamente linhas de pagamento de fatura: "PAGAMENTO EFETUADO", "PAGTO FATURA", "PAGAMENTO FATURA", "DEBITO AUTOMATICO FATURA" — são pagamentos da fatura anterior, não gastos`
 
 function parseResponse(raw: string): { tipo: string; titular: string; periodo: string; lines: string[] } {
   const tipo = raw.match(/^TIPO:(.+)$/im)?.[1]?.trim() ?? 'conta'
