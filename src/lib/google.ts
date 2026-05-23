@@ -11,7 +11,7 @@ function getAuth() {
   })
 }
 
-export async function readSheet(sheetId: string, range = 'Sheet1'): Promise<string[][]> {
+export async function readSheet(sheetId: string, range = 'A:Z'): Promise<string[][]> {
   const auth = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
   const res = await sheets.spreadsheets.values.get({
@@ -21,7 +21,7 @@ export async function readSheet(sheetId: string, range = 'Sheet1'): Promise<stri
   return (res.data.values as string[][]) || []
 }
 
-export async function appendRows(sheetId: string, rows: string[][], range = 'Sheet1'): Promise<void> {
+export async function appendRows(sheetId: string, rows: string[][], range = 'A:Z'): Promise<void> {
   const auth = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
   await sheets.spreadsheets.values.append({
