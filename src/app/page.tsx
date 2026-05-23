@@ -119,6 +119,7 @@ export default function Home() {
   const [rulesCache, setRulesCache] = useState<RulesCache | null>(null)
   const [loadingRules, setLoadingRules] = useState(false)
   const [loadingData, setLoadingData] = useState(false)
+  const [loadedMonth, setLoadedMonth] = useState('')
   const [month, setMonth] = useState(defaultMonth)
 
   // Import form state
@@ -151,6 +152,7 @@ export default function Home() {
       if (!res.ok) return
       const data = await res.json()
       setTransactions(data.transactions || [])
+      setLoadedMonth(mes)
     } catch {
       // silently fail — user can import manually
     } finally {
@@ -159,8 +161,13 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    if (status === 'authenticated') loadTransactions(month)
-  }, [status, month, loadTransactions])
+    if (status === 'authenticated') loadTransactions(defaultMonth)
+  }, [status, loadTransactions])
+
+  const navigateMonth = useCallback(() => {
+    if (!/^\d{2}\/\d{4}$/.test(month)) return
+    loadTransactions(month)
+  }, [month, loadTransactions])
 
   const activeSourceObj = SOURCES.find(s => s.id === activeSource)
   const isRenata = activeSourceObj?.pessoa === 'renata'
@@ -409,11 +416,15 @@ export default function Home() {
               {rulesCache && !loadingRules && (
                 <button onClick={loadRules} className="text-xs text-emerald-600 hover:text-emerald-400">✓ {ruleCount} regras ↻</button>
               )}
-              {loadingData && <span className="text-xs text-zinc-500 animate-pulse">Carregando lançamentos...</span>}
+              {loadingData && <span className="text-xs text-zinc-500 animate-pulse">Carregando...</span>}
+              {!loadingData && loadedMonth && (
+                <span className="text-xs text-zinc-500">✓ {loadedMonth} · {transactions.length} lançamentos</span>
+              )}
               {saving && <span className="text-xs text-zinc-500 animate-pulse">Salvando...</span>}
               {saveStatus === 'ok' && !saving && <span className="text-xs text-emerald-500">✓ Salvo</span>}
               {saveStatus === 'skipped' && !saving && <span className="text-xs text-zinc-500">✓ Já salvo</span>}
-              <input value={month} onChange={e => setMonth(e.target.value)} className="text-sm bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-zinc-400 w-24 text-center focus:outline-none" placeholder="MM/YYYY" />
+              <input value={month} onChange={e => setMonth(e.target.value)} onKeyDown={e => e.key === 'Enter' && navigateMonth()} className="text-sm bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-zinc-400 w-24 text-center focus:outline-none" placeholder="MM/AAAA" />
+              <button onClick={navigateMonth} title="Carregar mês" className="text-xs px-2 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">→</button>
               <button onClick={() => signOut({ callbackUrl: '/login' })} className="text-xs text-zinc-600 hover:text-zinc-400">{pessoa === 'rafael' ? 'Rafael' : 'Renata'} ↗</button>
             </div>
           </div>
