@@ -70,6 +70,23 @@ Retorne APENAS JSON array sem markdown:
     .map(b => (b as { type: 'text'; text: string }).text)
     .join('')
 
+  console.log('[classifyBatch] raw response length:', text.length, '| preview:', text.slice(0, 200))
+
   const cleaned = text.replace(/```json|```/g, '').trim()
-  return JSON.parse(cleaned) as AIClassifiedTx[]
+
+  try {
+    return JSON.parse(cleaned) as AIClassifiedTx[]
+  } catch {
+    const match = cleaned.match(/\[[\s\S]*\]/)
+    if (match) {
+      try {
+        return JSON.parse(match[0]) as AIClassifiedTx[]
+      } catch (e2) {
+        console.error('[classifyBatch] regex parse also failed:', e2, '| text:', text.slice(0, 500))
+      }
+    } else {
+      console.error('[classifyBatch] no JSON array found in response | text:', text.slice(0, 500))
+    }
+    return []
+  }
 }
