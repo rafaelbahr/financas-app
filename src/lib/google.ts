@@ -21,13 +21,13 @@ export async function readSheet(sheetId: string, range = 'A:Z'): Promise<string[
   return (res.data.values as string[][]) || []
 }
 
-export async function appendRows(sheetId: string, rows: string[][], range = 'A:Z'): Promise<void> {
+export async function appendRows(sheetId: string, rows: (string | number)[][], range = 'A:Z'): Promise<void> {
   const auth = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
     range,
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: { values: rows },
   })
 }
@@ -71,30 +71,33 @@ export async function fetchTransactions(mes: string): Promise<Transaction[]> {
     }))
 }
 
+function normalizeValor(v: string | undefined): string {
+  return parseFloat((v || '0').replace(',', '.')).toFixed(2)
+}
+
 export async function saveTransactions(transactions: Transaction[], mes: string): Promise<{ saved: number; skipped: number }> {
-  // Read existing to dedup
   const existing = await readSheet(process.env.SHEET_LANCAMENTOS_ID!)
   const existingKeys = new Set(
-    existing.slice(1).map(r => `${r[2]}|${(r[3] || '').toLowerCase()}|${r[6]}|${r[1]}`)
+    existing.slice(1).map(r => `${r[2]}|${(r[3] || '').toLowerCase()}|${normalizeValor(r[6])}|${r[1]}`)
   )
 
-  const newRows: string[][] = []
+  const newRows: (string | number)[][] = []
 
   // Regular transactions
   const others = transactions.filter(tx => !(tx.source.startsWith('renata') && tx.natureza === 'pessoal'))
   for (const tx of others) {
-    const key = `${tx.source}|${tx.descricao.toLowerCase()}|${tx.valor.toFixed(2).replace('.', ',')}|${tx.data || ''}`
+    const key = `${tx.source}|${tx.descricao.toLowerCase()}|${tx.valor.toFixed(2)}|${tx.data || ''}`
     if (existingKeys.has(key)) continue
-    newRows.push([mes, tx.data || '', tx.source, tx.descricao, tx.categoria, tx.natureza, tx.valor.toFixed(2).replace('.', ',')])
+    newRows.push([mes, tx.data || '', tx.source, tx.descricao, tx.categoria, tx.natureza, tx.valor])
   }
 
   // Renata pessoal — only total
   const renataPessoal = transactions.filter(tx => tx.source.startsWith('renata') && tx.natureza === 'pessoal')
   if (renataPessoal.length > 0) {
     const total = renataPessoal.reduce((s, t) => s + t.valor, 0)
-    const key = `renata|gastos pessoais renata (privado)|${total.toFixed(2).replace('.', ',')}|`
+    const key = `renata|gastos pessoais renata (privado)|${total.toFixed(2)}|`
     if (!existingKeys.has(key)) {
-      newRows.push([mes, '', 'renata', 'Gastos pessoais Renata (privado)', 'Pessoal', 'pessoal', total.toFixed(2).replace('.', ',')])
+      newRows.push([mes, '', 'renata', 'Gastos pessoais Renata (privado)', 'Pessoal', 'pessoal', total])
     }
   }
 
