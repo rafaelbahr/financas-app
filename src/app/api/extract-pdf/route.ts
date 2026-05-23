@@ -13,10 +13,17 @@ TITULAR:nome completo
 PERIODO:MM/AAAA
 DD/MM/AAAA|DESCRIÇÃO DA TRANSAÇÃO|VALOR
 
-Regras:
+Regras de TIPO:
+- Use "cartao" se for fatura de cartão de crédito
+- Use "conta" se for extrato de conta corrente/poupança
+
+Regras de VALOR:
+- Fatura de CARTÃO: todos os valores são POSITIVOS (são compras/débitos do titular)
+- Extrato de CONTA: valores negativos = débito, positivos = crédito/entrada
+
+Outras regras:
 - Uma transação por linha após os campos TIPO/TITULAR/PERIODO
-- VALOR deve ser número decimal com ponto (ex: -150.00 ou 200.50)
-- Valores negativos = débito, positivos = crédito
+- VALOR deve ser número decimal com ponto (ex: 150.00 ou -200.50)
 - Ignore saldos, rendimentos automáticos (APLIC AUT/APR/MAIS) e totais`
 
 function parseResponse(raw: string): { tipo: string; titular: string; periodo: string; lines: string[] } {
@@ -33,8 +40,9 @@ function parseResponse(raw: string): { tipo: string; titular: string; periodo: s
     const date = parts[0].trim()
     const desc = parts[1].trim()
     const valorStr = parts[2].trim().replace(',', '.')
-    const valor = parseFloat(valorStr)
+    let valor = parseFloat(valorStr)
     if (isNaN(valor)) continue
+    if (tipo.includes('cartao')) valor = Math.abs(valor)
     lines.push(`${date} ${desc} ${valor.toFixed(2)}`)
   }
 
