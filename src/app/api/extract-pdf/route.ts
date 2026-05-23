@@ -9,46 +9,36 @@ const EXTRACT_PROMPT = `Extraia todas as transações do extrato bancário brasi
 
 Retorne APENAS texto simples neste formato exato (sem markdown, sem explicações):
 TIPO:conta
-BANCO:nome do banco
 TITULAR:nome completo
 PERIODO:MM/AAAA
 DD/MM/AAAA|DESCRIÇÃO DA TRANSAÇÃO|VALOR
 
 Regras:
-- Ignore saldos, rendimentos automáticos (APLIC AUT/APR/MAIS) e totais
-- Conta corrente: valor negativo para débito, positivo para crédito
-- Fatura cartão: valores sempre positivos
-- Uma transação por linha, sem linhas em branco entre elas
-- VALOR deve ser número decimal com ponto (ex: -150.00 ou 200.50)`
+- Uma transação por linha após os campos TIPO/TITULAR/PERIODO
+- VALOR deve ser número decimal com ponto (ex: -150.00 ou 200.50)
+- Valores negativos = débito, positivos = crédito
+- Ignore saldos, rendimentos automáticos (APLIC AUT/APR/MAIS) e totais`
 
-function parsePlainText(raw: string): {
-  tipo: string; banco: string; titular: string; periodo: string; lines: string[]
-} {
-  const tipo_match = raw.match(/^TIPO:(.+)$/m)
-  const banco_match = raw.match(/^BANCO:(.+)$/m)
-  const titular_match = raw.match(/^TITULAR:(.+)$/m)
-  const periodo_match = raw.match(/^PERIODO:(.+)$/m)
-
-  const tipo = tipo_match?.[1]?.trim() ?? ''
-  const banco = banco_match?.[1]?.trim() ?? ''
-  const titular = titular_match?.[1]?.trim() ?? ''
-  const periodo = periodo_match?.[1]?.trim() ?? ''
+function parseResponse(raw: string): { tipo: string; titular: string; periodo: string; lines: string[] } {
+  const tipo = raw.match(/^TIPO:(.+)$/im)?.[1]?.trim() ?? 'conta'
+  const titular = raw.match(/^TITULAR:(.+)$/im)?.[1]?.trim() ?? ''
+  const periodo = raw.match(/^PERIODO:(.+)$/im)?.[1]?.trim() ?? ''
 
   const lines: string[] = []
-  for (const raw_line of raw.split('\n')) {
-    const line = raw_line.trim()
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.trim()
     if (!line.includes('|')) continue
     const parts = line.split('|')
     if (parts.length < 3) continue
-    const data = parts[0].trim()
-    const descricao = parts[1].trim()
+    const date = parts[0].trim()
+    const desc = parts[1].trim()
     const valorStr = parts[2].trim().replace(',', '.')
     const valor = parseFloat(valorStr)
-    if (isNaN(valor) || !/^\d{2}\/\d{2}\/\d{4}$/.test(data)) continue
-    lines.push(`${data} ${descricao} ${valor}`)
+    if (isNaN(valor)) continue
+    lines.push(`${date} ${desc} ${valor.toFixed(2)}`)
   }
 
-  return { tipo, banco, titular, periodo, lines }
+  return { tipo, titular, periodo, lines }
 }
 
 export const maxDuration = 60
@@ -116,7 +106,6 @@ export async function POST(req: NextRequest) {
 
         let rawText = ''
         let lastProgressLen = 0
-        let stopReason: string | null = null
 
         for await (const event of claudeStream) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
@@ -129,33 +118,25 @@ export async function POST(req: NextRequest) {
               })
               lastProgressLen = rawText.length
             }
-          } else if (event.type === 'message_delta') {
-            stopReason = event.delta.stop_reason ?? null
           }
         }
 
-        console.log(`[extract-pdf] Stream complete length=${rawText.length} stop_reason=${stopReason}`)
+        console.log(`[extract-pdf] Stream complete length=${rawText.length}`)
         console.log('[extract-pdf] rawText preview (first 400):', rawText.slice(0, 400))
-        console.log('[extract-pdf] rawText tail (last 200):', rawText.slice(-200))
 
         send({ type: 'progress', message: 'Processando resultado...' })
 
-        const { tipo, banco, titular, periodo, lines } = parsePlainText(rawText)
+        const { tipo, titular, periodo, lines } = parseResponse(rawText)
 
-        console.log(`[extract-pdf] Parsed: tipo=${tipo} banco=${banco} transacoes=${lines.length}`)
+        console.log(`[extract-pdf] Parsed: tipo=${tipo} titular=${titular} transacoes=${lines.length}`)
 
         if (lines.length === 0) {
-          send({
-            type: 'error',
-            message: `Nenhuma transação encontrada. Resposta do modelo: ${rawText.slice(0, 300)}`,
-          })
-          return
+          console.warn('[extract-pdf] No transactions found. Raw tail:', rawText.slice(-300))
         }
 
         send({
           type: 'result',
           tipo,
-          banco,
           titular,
           periodo,
           text: lines.join('\n'),
