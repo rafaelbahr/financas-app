@@ -129,6 +129,7 @@ export default function Home() {
   const [pdfLoading, setPdfLoading] = useState(false)
   const [pdfProgress, setPdfProgress] = useState('')
   const [pdfInfo, setPdfInfo] = useState<{ tipo: string; titular: string; periodo: string; totalTransacoes: number } | null>(null)
+  const [showManual, setShowManual] = useState(false)
 
   // Income form state
   const [incomePessoa, setIncomePessoa] = useState<'rafael' | 'renata'>('rafael')
@@ -196,12 +197,67 @@ export default function Home() {
     }
   }, [])
 
+  const classifyAndSave = useCallback(async (text: string) => {
+    if (!text.trim()) return
+    setLoading(true)
+    setError(null)
+    setProgress([])
+
+    try {
+      addProgress('🤖 Classificando lançamentos', 'pending', rulesCache ? `${ruleCount} regras + IA` : 'Apenas IA')
+
+      const filter = activeSourceObj?.type === 'conta' && (filterFrom || filterTo)
+        ? { from: filterFrom, to: filterTo }
+        : null
+
+      const res = await fetch('/api/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, source: activeSource, filter, cachedRules: rulesCache }),
+      })
+
+      if (!res.ok) throw new Error('Erro na classificação')
+      const data = await res.json()
+
+      addProgress('🤖 Classificando lançamentos', 'done', `${data.stats.total} lançamentos (${data.stats.byRules} por regras, ${data.stats.byAI} por IA)`)
+
+      const withSource: Transaction[] = data.transactions.map((tx: Transaction, i: number) => ({
+        ...tx, id: `${activeSource}-${Date.now()}-${i}`, source: activeSource, mes: month, isReembolso: tx.isReembolso || tx.valor < 0,
+      }))
+
+      const updated = [...transactions, ...withSource]
+      setTransactions(updated)
+      setImportText('')
+      setTab('transactions')
+
+      addProgress('💾 Salvando no Drive', 'pending')
+      setSaving(true)
+      const saveRes = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactions: updated, mes: month }),
+      })
+      const saveData = await saveRes.json()
+      setSaveStatus(saveData.saved > 0 ? 'ok' : 'skipped')
+      addProgress('💾 Salvando no Drive', 'done', saveData.saved > 0 ? `${saveData.saved} salvos` : 'Já existiam')
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Erro desconhecido'
+      setError(msg)
+      setProgress(prev => prev.map(p => p.status === 'pending' ? { ...p, status: 'error' } : p))
+    } finally {
+      setLoading(false)
+      setSaving(false)
+    }
+  }, [activeSource, activeSourceObj, filterFrom, filterTo, transactions, month, rulesCache, ruleCount, addProgress])
+
   const handlePdfUpload = useCallback(async (file: File) => {
     setPdfLoading(true)
     setPdfInfo(null)
-    setPdfProgress('Preparando PDF...')
+    setPdfProgress('📄 Extraindo transações...')
     setImportText('')
     setError(null)
+
+    let extractedText = ''
 
     const handleSseLine = (line: string) => {
       if (!line.startsWith('data: ')) return
@@ -210,14 +266,12 @@ export default function Home() {
         console.warn('[handlePdfUpload] Failed to parse SSE line:', line.slice(0, 100), err)
         return
       }
-      console.log('[handlePdfUpload] SSE event:', event.type, event.type === 'progress' ? event.message : '')
       if (event.type === 'progress') {
         setPdfProgress(event.message as string)
       } else if (event.type === 'result') {
-        const text = event.text as string
-        console.log('[handlePdfUpload] Result received — textLength:', text?.length, 'totalTransacoes:', event.totalTransacoes)
-        console.log('[handlePdfUpload] Text preview:', text?.slice(0, 150))
-        setImportText(text)
+        extractedText = event.text as string
+        console.log('[handlePdfUpload] Result — textLength:', extractedText?.length, 'totalTransacoes:', event.totalTransacoes)
+        setImportText(extractedText)
         setPdfInfo({
           tipo: event.tipo as string,
           titular: event.titular as string,
@@ -237,15 +291,11 @@ export default function Home() {
         reader.readAsDataURL(file)
       })
 
-      console.log('[handlePdfUpload] Uploading PDF, base64 length:', base64.length)
-
       const res = await fetch('/api/extract-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pdfBase64: base64, filename: file.name }),
       })
-
-      console.log('[handlePdfUpload] Response status:', res.status, 'content-type:', res.headers.get('content-type'))
 
       if (!res.ok) throw new Error(`Erro ao processar PDF (${res.status})`)
       if (!res.body) throw new Error('Sem resposta do servidor')
@@ -256,13 +306,8 @@ export default function Home() {
 
       while (true) {
         const { done, value } = await sseReader.read()
-
-        // Process data BEFORE checking done — some runtimes deliver the last
-        // chunk with done=true simultaneously, and breaking first would drop it.
         if (value?.length) {
           buffer += decoder.decode(value, { stream: !done })
-
-          // Use \n\n (the real SSE event delimiter) instead of splitting on \n
           let boundary
           while ((boundary = buffer.indexOf('\n\n')) !== -1) {
             const eventBlock = buffer.slice(0, boundary)
@@ -270,14 +315,17 @@ export default function Home() {
             for (const line of eventBlock.split('\n')) handleSseLine(line)
           }
         }
-
         if (done) break
       }
 
-      // Handle any data left in buffer (stream that didn't end with \n\n)
       if (buffer.trim()) {
-        console.log('[handlePdfUpload] Remaining buffer after stream close:', buffer.trim().slice(0, 100))
         for (const line of buffer.trim().split('\n')) handleSseLine(line)
+      }
+
+      if (extractedText.trim()) {
+        setPdfLoading(false)
+        setPdfProgress('')
+        await classifyAndSave(extractedText)
       }
 
     } catch (e: unknown) {
@@ -287,60 +335,11 @@ export default function Home() {
       setPdfLoading(false)
       setPdfProgress('')
     }
-  }, [])
+  }, [classifyAndSave])
 
   const handleImport = useCallback(async () => {
-    if (!importText.trim()) return
-    setLoading(true)
-    setError(null)
-    setProgress([])
-
-    try {
-      addProgress('Classificando lançamentos', 'pending', rulesCache ? `${ruleCount} regras + IA` : 'Apenas IA')
-
-      const filter = activeSourceObj?.type === 'conta' && (filterFrom || filterTo)
-        ? { from: filterFrom, to: filterTo }
-        : null
-
-      const res = await fetch('/api/classify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: importText, source: activeSource, filter, cachedRules: rulesCache }),
-      })
-
-      if (!res.ok) throw new Error('Erro na classificação')
-      const data = await res.json()
-
-      addProgress('Classificando lançamentos', 'done', `${data.stats.total} lançamentos (${data.stats.byRules} por regras, ${data.stats.byAI} por IA)`)
-
-      const withSource: Transaction[] = data.transactions.map((tx: Transaction, i: number) => ({
-        ...tx, id: `${activeSource}-${Date.now()}-${i}`, source: activeSource, mes: month, isReembolso: tx.isReembolso || tx.valor < 0,
-      }))
-
-      const updated = [...transactions, ...withSource]
-      setTransactions(updated)
-      setImportText('')
-      setTab('transactions')
-
-      addProgress('Salvando no Drive', 'pending')
-      setSaving(true)
-      const saveRes = await fetch('/api/transactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transactions: updated, mes: month }),
-      })
-      const saveData = await saveRes.json()
-      setSaveStatus(saveData.saved > 0 ? 'ok' : 'skipped')
-      addProgress('Salvando no Drive', 'done', saveData.saved > 0 ? `${saveData.saved} salvos` : 'Já existiam')
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Erro desconhecido'
-      setError(msg)
-      setProgress(prev => prev.map(p => p.status === 'pending' ? { ...p, status: 'error' } : p))
-    } finally {
-      setLoading(false)
-      setSaving(false)
-    }
-  }, [importText, activeSource, activeSourceObj, filterFrom, filterTo, transactions, month, rulesCache, ruleCount, addProgress])
+    await classifyAndSave(importText)
+  }, [importText, classifyAndSave])
 
   const handleAddReembolso = () => {
     const v = parseFloat(reimbValor.replace(',', '.'))
@@ -505,15 +504,23 @@ export default function Home() {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex-1 h-px bg-zinc-800" />
-              <span className="text-xs text-zinc-600">ou cole o texto abaixo</span>
-              <div className="flex-1 h-px bg-zinc-800" />
-            </div>
-            <textarea value={importText} onChange={e => { setImportText(e.target.value); if (pdfInfo) setPdfInfo(null) }} placeholder="Cole aqui o texto do extrato..." className="w-full h-40 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none font-mono" />
-            <button onClick={handleImport} disabled={!importText.trim() || loading} className="w-full py-3 rounded-xl bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-900 font-semibold text-sm transition-all disabled:cursor-not-allowed">
-              {loading ? 'Processando...' : ruleCount > 0 ? `Classificar automaticamente (${ruleCount} regras) →` : 'Classificar automaticamente →'}
-            </button>
+            {showManual || importText.trim() ? (
+              <>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-zinc-800" />
+                  <span className="text-xs text-zinc-600">inserir texto manualmente</span>
+                  <div className="flex-1 h-px bg-zinc-800" />
+                </div>
+                <textarea value={importText} onChange={e => { setImportText(e.target.value); if (pdfInfo) setPdfInfo(null) }} placeholder="Cole aqui o texto do extrato..." className="w-full h-40 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none font-mono" />
+                <button onClick={handleImport} disabled={!importText.trim() || loading} className="w-full py-3 rounded-xl bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-900 font-semibold text-sm transition-all disabled:cursor-not-allowed">
+                  {loading ? 'Processando...' : ruleCount > 0 ? `Classificar automaticamente (${ruleCount} regras) →` : 'Classificar automaticamente →'}
+                </button>
+              </>
+            ) : (
+              <button onClick={() => setShowManual(true)} className="text-xs text-zinc-600 hover:text-zinc-500 transition-colors">
+                Inserir texto manualmente ↓
+              </button>
+            )}
             <ProgressPanel steps={progress} />
             {error && <div className="bg-red-950/30 border border-red-800/30 rounded-xl px-4 py-3 text-sm text-red-300">{error}</div>}
           </div>
