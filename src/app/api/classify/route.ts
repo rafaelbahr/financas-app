@@ -5,6 +5,8 @@ import { classifyBatch } from '@/lib/anthropic'
 import { preClassifyLines, filterLinesByDate } from '@/lib/rules'
 import { fetchCategoryRules, fetchPixRules } from '@/lib/google'
 
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -25,7 +27,7 @@ export async function POST(req: NextRequest) {
 
   // AI classify unmatched in batches
   const aiResults = []
-  const BATCH = 25
+  const BATCH = 10
   for (let i = 0; i < unmatched.length; i += BATCH) {
     const batch = unmatched.slice(i, i + BATCH).join('\n')
     const results = await classifyBatch([batch], source)
