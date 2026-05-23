@@ -118,6 +118,7 @@ export default function Home() {
   const [progress, setProgress] = useState<{ step: string; status: string; detail: string }[]>([])
   const [rulesCache, setRulesCache] = useState<RulesCache | null>(null)
   const [loadingRules, setLoadingRules] = useState(false)
+  const [loadingData, setLoadingData] = useState(false)
   const [month, setMonth] = useState(defaultMonth)
 
   // Import form state
@@ -142,6 +143,24 @@ export default function Home() {
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/login')
   }, [status, router])
+
+  const loadTransactions = useCallback(async (mes: string) => {
+    setLoadingData(true)
+    try {
+      const res = await fetch(`/api/transactions?mes=${encodeURIComponent(mes)}`)
+      if (!res.ok) return
+      const data = await res.json()
+      setTransactions(data.transactions || [])
+    } catch {
+      // silently fail — user can import manually
+    } finally {
+      setLoadingData(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (status === 'authenticated') loadTransactions(month)
+  }, [status, month, loadTransactions])
 
   const activeSourceObj = SOURCES.find(s => s.id === activeSource)
   const isRenata = activeSourceObj?.pessoa === 'renata'
@@ -390,6 +409,7 @@ export default function Home() {
               {rulesCache && !loadingRules && (
                 <button onClick={loadRules} className="text-xs text-emerald-600 hover:text-emerald-400">✓ {ruleCount} regras ↻</button>
               )}
+              {loadingData && <span className="text-xs text-zinc-500 animate-pulse">Carregando lançamentos...</span>}
               {saving && <span className="text-xs text-zinc-500 animate-pulse">Salvando...</span>}
               {saveStatus === 'ok' && !saving && <span className="text-xs text-emerald-500">✓ Salvo</span>}
               {saveStatus === 'skipped' && !saving && <span className="text-xs text-zinc-500">✓ Já salvo</span>}
@@ -411,6 +431,27 @@ export default function Home() {
         {tab === 'import' && (
           <div className="space-y-4">
             <SourceGrid />
+            {!loadingData && transactions.length > 0 && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 space-y-1.5">
+                <div className="text-xs text-zinc-500 uppercase tracking-wider">Já importados em {month}</div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {SOURCES.map(s => {
+                    const count = transactions.filter(tx => tx.source === s.id).length
+                    if (count === 0) return null
+                    return (
+                      <span key={s.id} className="text-xs text-zinc-400">
+                        {s.label}: <span className="text-zinc-200 font-medium">{count}</span>
+                      </span>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+            {loadingData && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-xs text-zinc-500 animate-pulse">
+                Carregando lançamentos do mês...
+              </div>
+            )}
             {isRenata && <div className="bg-rose-950/20 border border-rose-800/30 rounded-xl px-4 py-3 text-sm text-rose-300">🔒 Detalhes privados — só totais aparecem no resumo.</div>}
             <p className="text-sm text-zinc-400">Cole o extrato de <strong className="text-zinc-200">{activeSourceObj?.label}</strong>.</p>
             {activeSourceObj?.type === 'conta' && (
